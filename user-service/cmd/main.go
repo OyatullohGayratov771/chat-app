@@ -4,13 +4,18 @@ import (
 	"context"
 	"log"
 	"net"
-	"user-service/config"
-	"user-service/internal/kafka"
-	"user-service/internal/redis"
-	"user-service/internal/service"
-	"user-service/internal/utils"
+	"strings"
+	"time"
 
-	db "user-service/internal/storage"
+	"user-service/internal/cache/redis"
+	"user-service/internal/config"
+	"user-service/internal/domain"
+	"user-service/internal/event/kafka"
+	grpcserver "user-service/internal/handler/grpc"
+	"user-service/internal/repository/postgres"
+	service "user-service/internal/service/user"
+	"user-service/internal/storage"
+	"user-service/internal/utils"
 
 	pb "user-service/protos/user"
 
@@ -21,75 +26,98 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+var ErrUnauthenticated = status.Error(codes.Unauthenticated, "unauthenticated")
+
 func main() {
-	// Loading configuration (.env)
+	// 1. Config yuklash
 	config.LoadConfig()
+	cfg := config.AppConfig
 
-	// Connecting to PostgreSQL
-	dbConn, err := db.ConnectToDB(config.AppConfig)
+	// 2. PostgreSQL ulanish
+	db, err := storage.ConnectToDB(cfg)
 	if err != nil {
-		log.Fatalf("Failed to connect to the database: %v", err)
+		log.Fatalf("❌ Failed to connect to PostgreSQL: %v", err)
 	}
+	defer db.Close()
 
-	// Launching the Storage Layer
-	dbPostgres := db.NewPostgresStorage(dbConn)
-	redis := redis.NewRedisClient(config.AppConfig)
-	kafka, err := kafka.NewProducer([]string{config.AppConfig.Kafka.Host + ":" + config.AppConfig.Kafka.Port})
-	if err != nil {
-		log.Fatalf("Kafka producer yaratishda xatolik: %v", err)
-	}
-	// Opening a TCP listener for the gRPC server
-	lis, err := net.Listen("tcp", config.AppConfig.Http.Host+":"+config.AppConfig.Http.Port)
-	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
-	}
-	// Creating a gRPC server and adding an interceptor
-	grpcServer := grpc.NewServer(
-		grpc.UnaryInterceptor(grpcInterceptor),
+	// 3. Kafka producer
+	kafkaProducer := kafka.NewKafkaProducer(
+		[]string{cfg.Kafka.Host + ":" + cfg.Kafka.Port},
+		cfg.Kafka.Topic,
 	)
-	// gRPC reflection (needed for tools like grpcurl)
+
+	// 4. Redis client
+	redisClient := redis.NewRedisClient(cfg)
+
+	// 5. JWT Provider
+	tokenProvider := utils.NewJWTProvider(
+		cfg.JWT.AccessSecret,
+		cfg.JWT.RefreshSecret,
+		time.Minute*15,
+		time.Hour*24*7,
+		redisClient,
+	)
+
+	// 6. Repository
+	userRepo := postgres.NewUserRepository(db)
+
+	// 7. Service layer
+	userService := service.NewUserService(userRepo, tokenProvider, kafkaProducer)
+
+	// 8. gRPC server + Auth interceptor
+	grpcServer := grpc.NewServer(
+		grpc.UnaryInterceptor(authInterceptor(tokenProvider)),
+	)
+	pb.RegisterUserServiceServer(grpcServer, grpcserver.NewUserServer(userService))
+
+	// 9. Reflection (grpcurl uchun)
 	reflection.Register(grpcServer)
 
-	// Registering a UserService server
-	pb.RegisterUserServiceServer(grpcServer, service.NewUserService(dbPostgres, redis, kafka))
+	// 10. TCP listener
+	addr := cfg.Http.Host + ":" + cfg.Http.Port
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("❌ Failed to listen on %s: %v", addr, err)
+	}
 
-	// Starting the server
-	log.Printf("User service running on %s:%s", config.AppConfig.Http.Host, config.AppConfig.Http.Port)
-	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("failed to serve: %v", err)
+	log.Printf("✅ gRPC User Service is running at %s", addr)
+
+	// 11. Serverni ishga tushirish
+	if err := grpcServer.Serve(listener); err != nil {
+		log.Fatalf("❌ Failed to serve gRPC server: %v", err)
 	}
 }
 
-// gRPC Interceptor: to log all RPC calls
-func grpcInterceptor(
-	ctx context.Context,
-	req interface{},
-	info *grpc.UnaryServerInfo,
-	handler grpc.UnaryHandler,
-) (interface{}, error) {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return handler(ctx, req) // Token bo‘lmasa ham davom etsin (Register/Login uchun)
-	}
+// Auth interceptor — barcha RPC chaqiriqlarda tokenni tekshiradi
+func authInterceptor(tokenProvider domain.TokenProvider) grpc.UnaryServerInterceptor {
+	return func(
+		ctx context.Context,
+		req interface{},
+		info *grpc.UnaryServerInfo,
+		handler grpc.UnaryHandler,
+	) (interface{}, error) {
 
-	// Authorization sarlavhasidan tokenni olish
-	authHeaders := md["authorization"]
-	if len(authHeaders) > 0 {
-		tokenStr := authHeaders[0]
-		if len(tokenStr) > 7 && tokenStr[:7] == "Bearer " {
-			tokenStr = tokenStr[7:] // Tokenni olib tashlaymiz, faqat haqiqiy tokenni qoldiramiz
+		// Login va Register endpointlarini token tekshirishdan chiqaramiz
+		if strings.Contains(info.FullMethod, "Login") ||
+			strings.Contains(info.FullMethod, "Register") {
+			return handler(ctx, req)
 		}
 
-		// Tokenni tekshirish
-		userID, err := utils.ValidateJWT(tokenStr)
+		md, ok := metadata.FromIncomingContext(ctx)
+		if !ok {
+			return nil, ErrUnauthenticated
+		}
+
+		tokens := md["authorization"]
+		if len(tokens) == 0 {
+			return nil, ErrUnauthenticated
+		}
+
+		userID, err := tokenProvider.ValidateAccessToken(strings.TrimPrefix(tokens[0], "Bearer "))
 		if err != nil {
-			log.Printf("Invalid token: %v", err)
-			return nil, status.Error(codes.Unauthenticated, "invalid token")
+			return nil, ErrUnauthenticated
 		}
-
-		// Contextga userID ni qo‘shamiz
-		ctx = context.WithValue(ctx, "userID", userID)
+		// Typed context key ishlatamiz
+		return handler(context.WithValue(ctx, "userID", userID), req)
 	}
-
-	return handler(ctx, req)
 }

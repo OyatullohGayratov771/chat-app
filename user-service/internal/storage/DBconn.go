@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 	"time"
-	"user-service/config"
+	"user-service/internal/config"
 
 	_ "github.com/lib/pq"
 )

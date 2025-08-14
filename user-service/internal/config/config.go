@@ -33,6 +33,11 @@ type Config struct {
 		Topic string
 	}
 
+	JWT struct {
+		AccessSecret  string
+		RefreshSecret string
+	}
+
 }
 
 var AppConfig Config
@@ -85,6 +90,12 @@ func LoadConfig() {
 			Group: os.Getenv("KAFKA_GROUP"),
 			Topic: os.Getenv("KAFKA_TOPIC"),
 		},
+		JWT: struct {
+			AccessSecret  string
+			RefreshSecret string
+		}{
+			AccessSecret:  os.Getenv("JWT_ACCESS_SECRET"),
+			RefreshSecret: os.Getenv("JWT_REFRESH_SECRET"),
+		},
 	}
-	log.Printf("Loaded config: %+v\n", AppConfig)
 }

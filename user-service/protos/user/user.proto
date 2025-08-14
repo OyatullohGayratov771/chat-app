@@ -1,57 +1,135 @@
 syntax = "proto3";
 
+package user;
+
 option go_package = ".";
 
+import "google/protobuf/timestamp.proto";
+
+// ==================== SERVICE DEFINITION ====================
+
 service UserService {
-  rpc Register(RegisterUserReq) returns (RegisterUserRes);
-  rpc Login(LoginUserReq) returns (LoginUserRes);
-  rpc UpdateUserName(UpdateUserNameReq) returns (UpdateRes);
-  rpc UpdatePassword(UpdatePasswordReq) returns (UpdateRes);
-  rpc UpdateEmail(UpdateEmailReq) returns (UpdateRes);
-  rpc GetProfile(GetProfileReq) returns (GetProfileRes);
+  // Auth & Registration
+  rpc Register(RegisterRequest) returns (AuthResponse);
+  rpc Login(LoginRequest) returns (AuthResponse);
+  rpc RefreshToken(RefreshTokenRequest) returns (AuthResponse);
+  rpc Logout(Empty) returns (Empty);
+
+  // Profile CRUD
+  rpc GetProfile(Empty) returns (User);
+  rpc UpdateUsername(UpdateUsernameRequest) returns (User);
+  rpc UpdateEmail(UpdateEmailRequest) returns (User);
+  rpc UpdateFullName(UpdateFullNameRequest) returns (User);
+  rpc UpdateAvatar(UpdateAvatarRequest) returns (User);
+  rpc UpdateLanguage(UpdateLanguageRequest) returns (User);
+
+  // Security
+  rpc ChangePassword(ChangePasswordRequest) returns (Empty);
+  rpc ForgotPassword(ForgotPasswordRequest) returns (Empty);
+  rpc ResetPassword(ResetPasswordRequest) returns (Empty);
+
+  // Account & Sessions
+  rpc DeleteAccount(Empty) returns (Empty);
+  rpc GetSessions(Empty) returns (SessionList);
 }
 
-message GetProfileReq {}
+// ==================== USER MODEL ====================
 
-message GetProfileRes {
+message User {
+  string id = 1;
+  string username = 2;
+  string email = 3;
+  string full_name = 4;
+  string avatar_url = 5;
+  string language = 6;
+  string platform = 7;
+  string device_id = 8;
+  string registered_ip = 9;
+  string user_agent = 10;
+  string location = 11;
+  google.protobuf.Timestamp registered_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+// ==================== AUTH REQUESTS ====================
+
+message RegisterRequest {
   string username = 1;
   string email = 2;
+  string password = 3;
+  string full_name = 4;
+  string avatar_url = 5;
+  string language = 6;
+  string platform = 7;
+  string device_id = 8;
 }
 
-message RegisterUserReq {
-  string username = 1;
+message LoginRequest {
+  string email = 1;
   string password = 2;
-  string email = 3;
+  string platform = 3;
+  string device_id = 4;
 }
 
-message RegisterUserRes {
-  string message = 1;
-  string token = 2;
+message RefreshTokenRequest {
+  string refresh_token = 1;
 }
 
-message LoginUserReq {
-  string username = 1;
-  string password = 2;
+message ChangePasswordRequest {
+  string old_password = 1;
+  string new_password = 2;
 }
 
-message LoginUserRes {
+message ForgotPasswordRequest {
+  string email = 1;
+}
+
+message ResetPasswordRequest {
   string token = 1;
+  string new_password = 2;
 }
 
-message UpdateUserNameReq {
-  string newusername = 1;
+// ==================== UPDATE REQUESTS ====================
+
+message UpdateUsernameRequest {
+  string username = 1;
 }
 
-message UpdatePasswordReq {
-  string currentpassword = 1;
-  string newpassword = 2;
-  string confirmpassword = 3;
+message UpdateEmailRequest {
+  string email = 1;
 }
 
-message UpdateEmailReq {
-  string newemail = 1;
+message UpdateFullNameRequest {
+  string full_name = 1;
 }
 
-message UpdateRes {
-  string message = 1;
+message UpdateAvatarRequest {
+  string avatar_url = 1; // empty string => remove avatar
+}
+
+message UpdateLanguageRequest {
+  string language = 1;
+}
+
+// ==================== SESSION ====================
+
+message Session {
+  string device_id = 1;
+  string platform = 2;
+  string ip_address = 3;
+  google.protobuf.Timestamp last_seen = 4;
+}
+
+message SessionList {
+  repeated Session sessions = 1;
+}
+
+// ==================== COMMON ====================
+
+message Empty {}
+
+message AuthResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  User user = 3;
 }

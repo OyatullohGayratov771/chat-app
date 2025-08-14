@@ -2,8 +2,7 @@ package redis
 
 import (
 	"context"
-	"log"
-	"user-service/config"
+	"user-service/internal/config"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -19,6 +18,5 @@ func NewRedisClient(cfg config.Config) *redis.Client {
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		panic("redis ulanmadi: " + err.Error())
 	}
-	log.Println("Connected to Redis")
 	return client
 }
